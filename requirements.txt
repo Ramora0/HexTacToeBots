@@ -1,0 +1,5 @@
+tqdm>=4.60
+
+# Only needed for C++ bots
+pybind11>=2.10
+setuptools>=68
