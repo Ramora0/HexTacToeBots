@@ -35,10 +35,12 @@ python evaluate.py --help                                     # all options
 **1. Scaffold it:**
 
 ```bash
-make new BOT=MyBot
+make new BOT=MyBot                # Python bot (default)
+make new BOT=MyBot LANG=js        # JavaScript bot
+make new BOT=MyBot LANG=cpp       # C++ bot
 ```
 
-This creates `bots/MyBot/bot.py` from the example template. Or do it manually:
+This creates `bots/MyBot/` from the appropriate template. Or do it manually:
 
 **1. Create a folder:** `bots/MyBot/`
 
@@ -129,6 +131,46 @@ Each hex cell has **6 neighbors:**
 
 **Key insight:** The board is infinite and sparse. `game.board` only contains occupied cells. There are no edges or boundaries -- you can place a stone at any unoccupied `(q, r)`.
 
+## JavaScript / TypeScript Bots
+
+You can write bots in JavaScript (or TypeScript) that run in a Node.js subprocess.
+
+**1. Scaffold it:**
+
+```bash
+make new BOT=MyJsBot LANG=js
+```
+
+**2. Edit `bots/MyJsBot/my_bot.js`:**
+
+```javascript
+function getMove(gameState) {
+    // gameState.board         - Array of [q, r, player] (player: 1=A, 2=B)
+    // gameState.boardMap      - Map<"q,r", player> for O(1) lookups
+    // gameState.currentPlayer - 1 or 2 (your player)
+    // gameState.movesLeftInTurn - 1 or 2
+    // gameState.moveCount     - total stones on the board
+    // gameState.winLength     - 6
+    // gameState.timeLimit     - seconds per move
+
+    return [[0, 0]];  // list of [q, r] moves
+}
+
+module.exports = { getMove };
+```
+
+**3. Run it:**
+
+```bash
+make run A=MyJsBot B=random_bot
+```
+
+Use `console.error()` for debug output -- stdout is reserved for the protocol.
+
+**TypeScript:** Rename `my_bot.js` to `my_bot.ts`, rename `runner.js` to `runner.ts`, and change the `cmd` in `bot.py` to `cmd=["npx", "tsx"]`. Everything else stays the same.
+
+**npm packages:** Add a `package.json` with your dependencies. `make build` will run `npm install` for any bot that has one.
+
 ## C++ Bots
 
 For performance-critical bots, you can write the logic in C++ and use pybind11 to expose it to Python.
@@ -189,6 +231,7 @@ HexTacToeBots/
     requirements.txt     # Python dependencies
     game.py              # Game rules -- don't modify
     evaluate.py          # Evaluation harness
+    js_runner.py         # Node.js subprocess bridge for JS bots
     bots/
         random_bot/      # Baseline bot (plays randomly)
             bot.py
@@ -199,8 +242,16 @@ HexTacToeBots/
             engine.h
             ...
     examples/
-        example.py       # Copy to bots/YourBot/bot.py to get started
-        example.cpp      # C++ bot boilerplate
+        python_example/  # Python bot template
+            bot.py
+        cpp_example/     # C++ bot template
+            bot.py
+            my_bot.cpp
+            setup.py
+        js_example/      # JavaScript bot template
+            bot.py       # Python wrapper (don't edit)
+            runner.js    # Protocol harness (don't edit)
+            my_bot.js    # Your bot logic (edit this)
 ```
 
 ## Evaluator Output

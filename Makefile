@@ -12,11 +12,18 @@ $(VENV)/bin/activate: requirements.txt
 	$(VENV)/bin/pip install -r requirements.txt
 	@touch $@
 
-build: setup ## Build all C++ bots (incremental)
+build: setup ## Build all C++ bots and install JS dependencies
 	@for setup_py in bots/*/setup.py; do \
+		[ -f "$$setup_py" ] || continue; \
 		dir=$$(dirname "$$setup_py"); \
 		echo "Building $$dir ..."; \
 		cd "$$dir" && $(CURDIR)/$(VENV)/bin/python setup.py build_ext --inplace && cd $(CURDIR); \
+	done
+	@for pkg_json in bots/*/package.json; do \
+		[ -f "$$pkg_json" ] || continue; \
+		dir=$$(dirname "$$pkg_json"); \
+		echo "Installing JS deps in $$dir ..."; \
+		cd "$$dir" && npm install --silent && cd $(CURDIR); \
 	done
 
 rebuild: setup ## Clean and rebuild all C++ bots from scratch
@@ -27,15 +34,18 @@ rebuild: setup ## Clean and rebuild all C++ bots from scratch
 		cd "$$dir" && $(CURDIR)/$(VENV)/bin/python setup.py build_ext --inplace && cd $(CURDIR); \
 	done
 
-new: ## Create a new bot: make new BOT=MyBot
-	@if [ -z "$(BOT)" ]; then echo "Usage: make new BOT=MyBot"; exit 1; fi
+new: ## Create a new bot: make new BOT=MyBot [LANG=py|cpp|js]
+	@if [ -z "$(BOT)" ]; then echo "Usage: make new BOT=MyBot [LANG=py|cpp|js]"; exit 1; fi
 	@if [ -d "bots/$(BOT)" ]; then echo "bots/$(BOT) already exists"; exit 1; fi
-	mkdir -p bots/$(BOT)
-	cp examples/example.py bots/$(BOT)/bot.py
-	touch bots/$(BOT)/__init__.py
-	@sed -i '' 's/my_bot/$(BOT)/g' bots/$(BOT)/bot.py 2>/dev/null || \
-		sed -i 's/my_bot/$(BOT)/g' bots/$(BOT)/bot.py
-	@echo "Created bots/$(BOT)/bot.py -- edit it and run: make run A=$(BOT) B=random_bot"
+	@lang=$(or $(LANG),py); \
+	if [ "$$lang" = "js" ]; then \
+		cp -r examples/js_example bots/$(BOT); \
+	elif [ "$$lang" = "cpp" ]; then \
+		cp -r examples/cpp_example bots/$(BOT); \
+	else \
+		cp -r examples/python_example bots/$(BOT); \
+	fi
+	@echo "Created bots/$(BOT)/ -- edit it and run: make run A=$(BOT) B=random_bot"
 
 run: setup ## Run a match: make run A=SealBot B=random_bot [N=20] [T=0.1]
 	@if [ -z "$(A)" ] || [ -z "$(B)" ]; then echo "Usage: make run A=BotA B=BotB [N=20] [T=0.1]"; exit 1; fi
@@ -48,3 +58,4 @@ clean: ## Remove build artifacts and venv
 	rm -rf $(VENV) __pycache__ bots/*/__pycache__ bots/*/build bots/*/*.egg-info
 	find bots -name '*.so' -delete
 	find bots -name '*.pyd' -delete
+	find bots -name 'node_modules' -type d -exec rm -rf {} + 2>/dev/null || true

@@ -10,4 +10,4 @@ dist/
 .venv/
 .DS_Store
 *.wasm
-*.js
+node_modules/
