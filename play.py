@@ -49,8 +49,79 @@ EDIT_MODE_COLOR = (255, 180, 40)
 REVIEW_COLOR = (100, 220, 100)
 PV_A_COLOR = (140, 40, 40)
 PV_B_COLOR = (40, 75, 140)
+DROPDOWN_BG = (40, 40, 52)
+DROPDOWN_HOVER = (60, 60, 78)
+DROPDOWN_BORDER = (100, 100, 120)
+DROPDOWN_SELECTED = (80, 80, 100)
 
 AI_MOVE_DELAY = 300
+
+
+class BotDropdown:
+    """A dropdown widget for selecting a bot from the available bots."""
+
+    def __init__(self, x, y, width, height, font, bot_names, selected):
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.font = font
+        self.bot_names = bot_names
+        self.selected = selected
+        self.open = False
+        self._label_rect = pygame.Rect(x, y, width, height)
+
+    @property
+    def item_rects(self):
+        rects = []
+        for i in range(len(self.bot_names)):
+            rects.append(pygame.Rect(
+                self.x, self.y + self.height * (i + 1),
+                self.width, self.height))
+        return rects
+
+    def hit_test(self, pos):
+        """Return 'label' if header clicked, bot name if item clicked, else None."""
+        if self._label_rect.collidepoint(pos):
+            return 'label'
+        if self.open:
+            for i, rect in enumerate(self.item_rects):
+                if rect.collidepoint(pos):
+                    return self.bot_names[i]
+        return None
+
+    def covers(self, pos):
+        """Return True if pos is inside the dropdown area (header or open list)."""
+        if self._label_rect.collidepoint(pos):
+            return True
+        if self.open:
+            for rect in self.item_rects:
+                if rect.collidepoint(pos):
+                    return True
+        return False
+
+    def draw(self, screen, mouse_pos):
+        # Header
+        pygame.draw.rect(screen, DROPDOWN_BG, self._label_rect)
+        pygame.draw.rect(screen, DROPDOWN_BORDER, self._label_rect, 1)
+        arrow = " v" if not self.open else " ^"
+        label = self.font.render(self.selected + arrow, True, TEXT_COLOR)
+        screen.blit(label, label.get_rect(midleft=(self.x + 8, self.y + self.height // 2)))
+
+        # Open list
+        if self.open:
+            for i, name in enumerate(self.bot_names):
+                rect = self.item_rects[i]
+                if name == self.selected:
+                    bg = DROPDOWN_SELECTED
+                elif rect.collidepoint(mouse_pos):
+                    bg = DROPDOWN_HOVER
+                else:
+                    bg = DROPDOWN_BG
+                pygame.draw.rect(screen, bg, rect)
+                pygame.draw.rect(screen, DROPDOWN_BORDER, rect, 1)
+                item = self.font.render(name, True, TEXT_COLOR)
+                screen.blit(item, item.get_rect(midleft=(rect.x + 8, rect.centery)))
 
 
 def _hex_distance(dq, dr):
@@ -185,7 +256,7 @@ def draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts,
                last_ai_moves=(), edit_hover_btn=1,
                show_numbers=False, move_numbers=None,
                save_msg=None, autoplay=False, pv_moves=None,
-               review_pos=0, review_total=0):
+               review_pos=0, review_total=0, dropdown=None):
     font_big, font_med, font_sm = fonts
     screen.fill(BG_COLOR)
 
@@ -326,6 +397,9 @@ def draw_board(screen, game, visible_cells, hover_hex, hex_size, ox, oy, fonts,
         msg_surf = font_med.render(save_msg, True, (100, 255, 100))
         screen.blit(msg_surf, msg_surf.get_rect(centerx=WINDOW_WIDTH // 2, y=WINDOW_HEIGHT - 70))
 
+    if dropdown:
+        dropdown.draw(screen, pygame.mouse.get_pos())
+
     pygame.display.flip()
 
 
@@ -351,7 +425,9 @@ def main():
             print(f"  {name}")
         sys.exit(0)
 
+    bot_names = list_bots()
     ai = load_bot(args.bot, time_limit=args.time_limit)
+    time_limit = args.time_limit
 
     pygame.init()
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
@@ -363,6 +439,9 @@ def main():
         pygame.font.SysFont("Arial", 20),
         pygame.font.SysFont("Arial", 16),
     )
+    dropdown = BotDropdown(
+        WINDOW_WIDTH - 180, 10, 170, 30,
+        fonts[2], bot_names, ai.name)
 
     # --- Base position (starting state for rebuild_game) ---
     base_board = None
@@ -435,6 +514,27 @@ def main():
                     hover_hex = None
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
+                # --- Dropdown handling (all modes) ---
+                if event.button == 1:
+                    hit = dropdown.hit_test(event.pos)
+                    if hit == 'label':
+                        dropdown.open = not dropdown.open
+                        continue
+                    elif hit is not None:
+                        # A bot was selected
+                        dropdown.open = False
+                        if hit != dropdown.selected:
+                            dropdown.selected = hit
+                            ai = load_bot(hit, time_limit=time_limit)
+                            pygame.display.set_caption(
+                                f"Hex Tic-Tac-Toe \u2014 vs {ai.name}")
+                            ai_stats = None
+                            pv_display = []
+                        continue
+                    elif dropdown.open:
+                        # Clicked outside the open dropdown -> close it
+                        dropdown.open = False
+
                 if mode == MODE_EDIT:
                     q, r = pixel_to_hex(*event.pos, hex_size, ox, oy)
                     if event.button == 1:
@@ -588,7 +688,7 @@ def main():
                        mode=mode, human_player=human_player, ai_stats=ai_stats,
                        last_ai_moves=last_ai_moves,
                        show_numbers=show_numbers, move_numbers=move_numbers,
-                       save_msg=save_msg, autoplay=autoplay)
+                       save_msg=save_msg, autoplay=autoplay, dropdown=dropdown)
             moves = ai.get_move(game)
             last_ai_moves = tuple(tuple(m) for m in moves)
             turn_number += 1
@@ -608,7 +708,8 @@ def main():
                    last_ai_moves=last_ai_moves, edit_hover_btn=edit_hover_btn,
                    show_numbers=show_numbers, move_numbers=move_numbers,
                    save_msg=save_msg, autoplay=autoplay, pv_moves=pv_display,
-                   review_pos=history_pos, review_total=len(move_history))
+                   review_pos=history_pos, review_total=len(move_history),
+                   dropdown=dropdown)
         clock.tick(60)
 
 
