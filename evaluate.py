@@ -60,7 +60,7 @@ class BotRunner:
         if self._bot is not None and hasattr(self._bot, 'time_limit'):
             self._bot.time_limit = self.time_limit
 
-        deadline = time.time() + self.time_limit * game.moves_left_in_turn
+        deadline = time.time() + self.time_limit
         result = self._get_move(game)
 
         # Generator: iterate until deadline, keep last result
@@ -179,6 +179,7 @@ def play_game(bot_a, bot_b, win_length=6, violations=None, max_moves=None,
     bots = {Player.A: bot_a, Player.B: bot_b}
     depths = {Player.A: defaultdict(int), Player.B: defaultdict(int)}
     times = {Player.A: [0.0, 0], Player.B: [0.0, 0]}
+    turn_times = {Player.A: [], Player.B: []}
     total_moves = 0
 
     while not game.game_over:
@@ -193,14 +194,15 @@ def play_game(bot_a, bot_b, win_length=6, violations=None, max_moves=None,
             # Bot produced no moves — forfeit
             return (Player.B if player == Player.A else Player.A,
                     depths[Player.A], depths[Player.B],
-                    tuple(times[Player.A]), tuple(times[Player.B]))
+                    tuple(times[Player.A]), tuple(times[Player.B]),
+                    list(turn_times[Player.A]), list(turn_times[Player.B]))
 
         num_moves = len(moves)
         times[player][0] += elapsed
         times[player][1] += num_moves
+        turn_times[player].append(elapsed)
 
-        allowed_time = bot.time_limit * num_moves
-        if elapsed > allowed_time * GRACE_FACTOR:
+        if elapsed > bot.time_limit * GRACE_FACTOR:
             if violations is not None:
                 violations[bot] = violations.get(bot, 0) + 1
                 if violations[bot] >= MAX_VIOLATIONS_PER_GAME:
@@ -211,7 +213,8 @@ def play_game(bot_a, bot_b, win_length=6, violations=None, max_moves=None,
 
         if total_moves >= max_moves:
             return (Player.NONE, depths[Player.A], depths[Player.B],
-                    tuple(times[Player.A]), tuple(times[Player.B]))
+                    tuple(times[Player.A]), tuple(times[Player.B]),
+                    list(turn_times[Player.A]), list(turn_times[Player.B]))
 
         invalid = False
         for q, r in moves:
@@ -221,10 +224,12 @@ def play_game(bot_a, bot_b, win_length=6, violations=None, max_moves=None,
         if invalid:
             return (Player.B if player == Player.A else Player.A,
                     depths[Player.A], depths[Player.B],
-                    tuple(times[Player.A]), tuple(times[Player.B]))
+                    tuple(times[Player.A]), tuple(times[Player.B]),
+                    list(turn_times[Player.A]), list(turn_times[Player.B]))
 
     return (game.winner, depths[Player.A], depths[Player.B],
-            tuple(times[Player.A]), tuple(times[Player.B]))
+            tuple(times[Player.A]), tuple(times[Player.B]),
+            list(turn_times[Player.A]), list(turn_times[Player.B]))
 
 
 def _play_one(args):
@@ -243,7 +248,7 @@ def _play_one(args):
     violations = {}
     exceeded = False
     try:
-        winner, d_a, d_b, t_a, t_b = play_game(
+        winner, d_a, d_b, t_a, t_b, tt_a, tt_b = play_game(
             seat_a, seat_b, win_length, violations, max_moves,
             start_position=start_position)
     except TimeLimitExceeded:
@@ -251,11 +256,12 @@ def _play_one(args):
         winner = Player.NONE
         d_a, d_b = defaultdict(int), defaultdict(int)
         t_a, t_b = (0.0, 0), (0.0, 0)
+        tt_a, tt_b = [], []
 
     move_count = t_a[1] + t_b[1]
     return (winner, swapped, dict(d_a), dict(d_b),
             violations.get(seat_a, 0), violations.get(seat_b, 0),
-            exceeded, t_a, t_b, move_count)
+            exceeded, t_a, t_b, move_count, tt_a, tt_b)
 
 
 def _create_bot(name, time_limit):
@@ -285,6 +291,8 @@ def evaluate(name_a, name_b, num_games=100, win_length=6, time_limit=0.1,
     aborted_games = 0
     bot_a_time = [0.0, 0]
     bot_b_time = [0.0, 0]
+    bot_a_turn_times = []
+    bot_b_turn_times = []
     game_lengths = []
 
     workers = os.cpu_count() or 1
@@ -303,7 +311,7 @@ def evaluate(name_a, name_b, num_games=100, win_length=6, time_limit=0.1,
         if use_tqdm:
             results_iter = tqdm(results_iter, total=num_games, desc="Games", unit="game")
         for result in results_iter:
-            winner, swapped, d_a, d_b, v_a, v_b, exceeded, t_a, t_b, move_count = result
+            winner, swapped, d_a, d_b, v_a, v_b, exceeded, t_a, t_b, move_count, tt_a, tt_b = result
 
             if exceeded:
                 aborted_games += 1
@@ -317,6 +325,8 @@ def evaluate(name_a, name_b, num_games=100, win_length=6, time_limit=0.1,
                 bot_a_violations += v_b
                 bot_b_time[0] += t_a[0]; bot_b_time[1] += t_a[1]
                 bot_a_time[0] += t_b[0]; bot_a_time[1] += t_b[1]
+                bot_b_turn_times.extend(tt_a)
+                bot_a_turn_times.extend(tt_b)
                 if winner == Player.A:     bot_b_wins += 1
                 elif winner == Player.B:   bot_a_wins += 1
                 else:                      draws += 1
@@ -327,6 +337,8 @@ def evaluate(name_a, name_b, num_games=100, win_length=6, time_limit=0.1,
                 bot_b_violations += v_b
                 bot_a_time[0] += t_a[0]; bot_a_time[1] += t_a[1]
                 bot_b_time[0] += t_b[0]; bot_b_time[1] += t_b[1]
+                bot_a_turn_times.extend(tt_a)
+                bot_b_turn_times.extend(tt_b)
                 if winner == Player.A:     bot_a_wins += 1
                 elif winner == Player.B:   bot_b_wins += 1
                 else:                      draws += 1
@@ -373,10 +385,17 @@ def evaluate(name_a, name_b, num_games=100, win_length=6, time_limit=0.1,
         dist = "  ".join(f"d{d}:{c}" for d, c in buckets)
         print(f"    {dist}")
 
-    for name, bt in [(na, bot_a_time), (nb, bot_b_time)]:
+    for name, bt, tt in [(na, bot_a_time, bot_a_turn_times), (nb, bot_b_time, bot_b_turn_times)]:
         if bt[1] > 0:
             avg_ms = 1000 * bt[0] / bt[1]
-            print(f"  {name} avg move time: {avg_ms:.0f}ms ({bt[1]} moves)")
+            if tt:
+                sorted_tt = sorted(tt)
+                n = len(sorted_tt)
+                med_ms = 1000 * sorted_tt[n // 2]
+                p95_ms = 1000 * sorted_tt[int(n * 0.95)]
+                print(f"  {name} move time: avg {avg_ms:.0f}ms, median {med_ms:.0f}ms, p95 {p95_ms:.0f}ms ({n} turns)")
+            else:
+                print(f"  {name} avg move time: {avg_ms:.0f}ms ({bt[1]} moves)")
 
     if game_lengths:
         avg_len = sum(game_lengths) / len(game_lengths)

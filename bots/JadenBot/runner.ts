@@ -57,9 +57,10 @@ rl.on("line", (line) => {
       const timeLimitMs = (msg.time_limit || 0.05) * 1000;
       const searchOptions: Partial<BotSearchOptions> = {
         budget: {
-          maxTimeMs: Math.max(30, timeLimitMs * 0.8),
+          maxTimeMs: Math.max(10, timeLimitMs * 0.9),
           maxNodes: DEFAULT_BOT_SEARCH_OPTIONS.budget.maxNodes,
         },
+        turnCandidateCount: timeLimitMs < 200 ? 4 : DEFAULT_BOT_SEARCH_OPTIONS.turnCandidateCount,
       };
 
       const decision = chooseBotTurnDetailed(state, DEFAULT_BOT_TUNING, searchOptions);

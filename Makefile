@@ -12,12 +12,18 @@ $(VENV)/bin/activate: requirements.txt
 	$(VENV)/bin/pip install -r requirements.txt
 	@touch $@
 
-build: setup ## Build all C++ bots and install JS dependencies
+build: setup ## Build all C++/Rust bots and install JS dependencies
 	@for setup_py in bots/*/setup.py; do \
 		[ -f "$$setup_py" ] || continue; \
 		dir=$$(dirname "$$setup_py"); \
 		echo "Building $$dir ..."; \
 		cd "$$dir" && $(CURDIR)/$(VENV)/bin/python setup.py build_ext --inplace && cd $(CURDIR); \
+	done
+	@for cargo_toml in bots/*/Cargo.toml; do \
+		[ -f "$$cargo_toml" ] || continue; \
+		dir=$$(dirname "$$cargo_toml"); \
+		echo "Building $$dir (Rust) ..."; \
+		cd "$$dir" && cargo build --release && cd $(CURDIR); \
 	done
 	@for pkg_json in bots/*/package.json; do \
 		[ -f "$$pkg_json" ] || continue; \
@@ -26,22 +32,29 @@ build: setup ## Build all C++ bots and install JS dependencies
 		cd "$$dir" && npm install --silent && cd $(CURDIR); \
 	done
 
-rebuild: setup ## Clean and rebuild all C++ bots from scratch
+rebuild: setup ## Clean and rebuild all C++/Rust bots from scratch
 	@for setup_py in bots/*/setup.py; do \
 		dir=$$(dirname "$$setup_py"); \
 		echo "Rebuilding $$dir ..."; \
 		rm -rf "$$dir"/build "$$dir"/*.so "$$dir"/*.pyd "$$dir"/*.egg-info; \
 		cd "$$dir" && $(CURDIR)/$(VENV)/bin/python setup.py build_ext --inplace && cd $(CURDIR); \
 	done
+	@for cargo_toml in bots/*/Cargo.toml; do \
+		dir=$$(dirname "$$cargo_toml"); \
+		echo "Rebuilding $$dir (Rust) ..."; \
+		cd "$$dir" && cargo clean && cargo build --release && cd $(CURDIR); \
+	done
 
 new: ## Create a new bot: make new BOT=MyBot [LANG=py|cpp|js]
-	@if [ -z "$(BOT)" ]; then echo "Usage: make new BOT=MyBot [LANG=py|cpp|js]"; exit 1; fi
+	@if [ -z "$(BOT)" ]; then echo "Usage: make new BOT=MyBot [LANG=py|cpp|js|rust]"; exit 1; fi
 	@if [ -d "bots/$(BOT)" ]; then echo "bots/$(BOT) already exists"; exit 1; fi
 	@lang=$(or $(LANG),py); \
 	if [ "$$lang" = "js" ]; then \
 		cp -r examples/js_example bots/$(BOT); \
 	elif [ "$$lang" = "cpp" ]; then \
 		cp -r examples/cpp_example bots/$(BOT); \
+	elif [ "$$lang" = "rust" ]; then \
+		cp -r examples/rust_example bots/$(BOT); \
 	else \
 		cp -r examples/python_example bots/$(BOT); \
 	fi
@@ -59,3 +72,8 @@ clean: ## Remove build artifacts and venv
 	find bots -name '*.so' -delete
 	find bots -name '*.pyd' -delete
 	find bots -name 'node_modules' -type d -exec rm -rf {} + 2>/dev/null || true
+	@for cargo_toml in bots/*/Cargo.toml; do \
+		[ -f "$$cargo_toml" ] || continue; \
+		dir=$$(dirname "$$cargo_toml"); \
+		cd "$$dir" && cargo clean 2>/dev/null; cd $(CURDIR); \
+	done

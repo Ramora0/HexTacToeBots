@@ -331,9 +331,12 @@ function rankPlacements(
   player: Player,
   tuning: BotTuning,
   moveOptions: Axial[],
-  rankOptions?: { ignoreDangerFlag?: boolean },
+  rankOptions?: { ignoreDangerFlag?: boolean; deadlineMs?: number },
 ): RankedPlacement[] {
-  const ranked = moveOptions.map((option) => {
+  const deadlineMs = rankOptions?.deadlineMs
+  const ranked: RankedPlacement[] = []
+  for (const option of moveOptions) {
+    if (deadlineMs !== undefined && ranked.length > 0 && nowMs() >= deadlineMs) break
     const simulated = appendMove(working, option.q, option.r, player)
     const immediateWin = isWinningPlacement(simulated.moves, option.q, option.r, player)
     const evalResult = evaluateBoardStateTracked(simulated.moves, tuning)
@@ -341,8 +344,8 @@ function rankPlacements(
       ? Number.POSITIVE_INFINITY
       : objectiveForPlayer(evalResult, player, tuning, rankOptions)
     const ownScore = player === 'X' ? evalResult.xScore : evalResult.oScore
-    return { option, simulated, immediateWin, objective, ownScore }
-  })
+    ranked.push({ option, simulated, immediateWin, objective, ownScore })
+  }
 
   ranked.sort((a, b) => {
     if (a.immediateWin !== b.immediateWin) return a.immediateWin ? -1 : 1
@@ -353,16 +356,21 @@ function rankPlacements(
   return ranked
 }
 
-function collectWinningTurnLines(state: LiveLikeState, player: Player, tuning: BotTuning): Axial[][] {
+function collectWinningTurnLines(state: LiveLikeState, player: Player, tuning: BotTuning, deadlineMs?: number): Axial[][] {
   if (state.placementsLeft <= 0) return []
 
-  const firstOptions = collectLegalCandidates(state, player, tuning)
+  let firstOptions = collectLegalCandidates(state, player, tuning)
   if (firstOptions.length === 0) return []
+  // Under time pressure, limit the expensive nested search
+  if (deadlineMs !== undefined && firstOptions.length > 10) {
+    firstOptions = firstOptions.slice(0, 10)
+  }
 
   const winners: Axial[][] = []
   const seen = new Set<string>()
 
   for (const first of firstOptions) {
+    if (deadlineMs !== undefined && winners.length > 0 && nowMs() >= deadlineMs) break
     const afterFirst = appendMove(state, first.q, first.r, player)
     if (isWinningPlacement(afterFirst.moves, first.q, first.r, player)) {
       const key = toKey(first.q, first.r)
@@ -377,6 +385,7 @@ function collectWinningTurnLines(state: LiveLikeState, player: Player, tuning: B
 
     const secondOptions = collectLegalCandidates(afterFirst, player, tuning)
     for (const second of secondOptions) {
+      if (deadlineMs !== undefined && nowMs() >= deadlineMs) break
       const afterSecond = appendMove(afterFirst, second.q, second.r, player)
       if (!isWinningPlacement(afterSecond.moves, second.q, second.r, player)) continue
       const key = `${toKey(first.q, first.r)}|${toKey(second.q, second.r)}`
@@ -389,14 +398,29 @@ function collectWinningTurnLines(state: LiveLikeState, player: Player, tuning: B
   return winners
 }
 
-function enumerateTurnCandidates(state: LiveLikeState, tuning: BotTuning, maxCandidates: number): Axial[][] {
+function enumerateTurnCandidates(state: LiveLikeState, tuning: BotTuning, maxCandidates: number, deadlineMs?: number): Axial[][] {
   const player = state.turn
   const placements = state.placementsLeft
   if (placements <= 0) return []
 
-  const winningLines = collectWinningTurnLines(state, player, tuning)
+  const winningLines = collectWinningTurnLines(state, player, tuning, deadlineMs)
   if (winningLines.length > 0) {
     return winningLines
+  }
+
+  // Fast path: if already past deadline, just return nearby cells without expensive eval
+  if (deadlineMs !== undefined && nowMs() >= deadlineMs) {
+    const fastCells = candidateCells(state.moves, 2).slice(0, Math.max(1, Math.floor(maxCandidates)))
+    if (placements === 1) {
+      return fastCells.map((c) => [c])
+    }
+    const pairs: Axial[][] = []
+    for (let i = 0; i < fastCells.length && pairs.length < maxCandidates; i++) {
+      for (let j = i + 1; j < fastCells.length && pairs.length < maxCandidates; j++) {
+        pairs.push([fastCells[i], fastCells[j]])
+      }
+    }
+    return pairs.length > 0 ? pairs : fastCells.map((c) => [c])
   }
 
   const baseEval = evaluateBoardStateTracked(state.moves, tuning)
@@ -404,11 +428,11 @@ function enumerateTurnCandidates(state: LiveLikeState, tuning: BotTuning, maxCan
   const firstOptions = collectLegalCandidates(state, player, tuning)
   const ownFinishNow = collectOneTurnFinishCells(state.moves, player)
   const tacticalMode = ownFinishNow.size > 0 || baselineOppWins > 0
-  const nonTacticalFirstCap = 30
-  const nonTacticalSecondCap = 20
-  const explorationFirstSample = 3
-  const explorationSecondSample = 2
-  const trimmedFirstOptions = tacticalMode
+  const nonTacticalFirstCap = deadlineMs !== undefined ? 5 : 30
+  const nonTacticalSecondCap = deadlineMs !== undefined ? 3 : 20
+  const explorationFirstSample = deadlineMs !== undefined ? 1 : 3
+  const explorationSecondSample = deadlineMs !== undefined ? 1 : 2
+  let trimmedFirstOptions = tacticalMode
     ? firstOptions
     : addExplorationCandidates(
         trimCandidatesForRanking(firstOptions, state.moves, player, nonTacticalFirstCap),
@@ -418,7 +442,16 @@ function enumerateTurnCandidates(state: LiveLikeState, tuning: BotTuning, maxCan
         explorationFirstSample,
         `first|${state.moveHistory.length}|${player}`,
       )
-  const firstRanked = rankPlacements(state, player, tuning, trimmedFirstOptions, { ignoreDangerFlag: placements >= 2 })
+  if (deadlineMs !== undefined && trimmedFirstOptions.length > nonTacticalFirstCap) {
+    trimmedFirstOptions = trimCandidatesForRanking(trimmedFirstOptions, state.moves, player, nonTacticalFirstCap)
+  }
+  // Under time pressure, skip expensive full-board evaluation ranking if past deadline
+  const firstRanked = (deadlineMs !== undefined && nowMs() >= deadlineMs)
+    ? trimmedFirstOptions.map((option) => {
+        const simulated = appendMove(state, option.q, option.r, player)
+        return { option, simulated, immediateWin: false, objective: 0, ownScore: 0 }
+      })
+    : rankPlacements(state, player, tuning, trimmedFirstOptions, { ignoreDangerFlag: placements >= 2, deadlineMs })
   if (firstRanked.length === 0) return []
 
   const baselineOppFinish = collectOneTurnFinishCells(state.moves, player === 'X' ? 'O' : 'X')
@@ -461,11 +494,12 @@ function enumerateTurnCandidates(state: LiveLikeState, tuning: BotTuning, maxCan
     return pruned.map((entry) => entry.line)
   }
 
-  const firstCandidates = firstRanked
+  const firstCandidates = deadlineMs !== undefined ? firstRanked.slice(0, 5) : firstRanked
 
   const lines: Array<{ line: Axial[]; objective: number; ownScore: number; immediateWin: boolean; oppOneTurnWins: number }> = []
 
   for (const first of firstCandidates) {
+    if (deadlineMs !== undefined && nowMs() >= deadlineMs && lines.length > 0) break
     const secondOptions = collectLegalCandidates(first.simulated, player, tuning)
     const trimmedSecondOptions = tacticalMode
       ? secondOptions
@@ -477,7 +511,7 @@ function enumerateTurnCandidates(state: LiveLikeState, tuning: BotTuning, maxCan
           explorationSecondSample,
           `second|${state.moveHistory.length}|${player}|${toKey(first.option.q, first.option.r)}`,
         )
-    const secondRanked = rankPlacements(first.simulated, player, tuning, trimmedSecondOptions)
+    const secondRanked = rankPlacements(first.simulated, player, tuning, trimmedSecondOptions, { deadlineMs })
     if (secondRanked.length === 0) {
       const evalResult = evaluateBoardStateTracked(first.simulated.moves, tuning)
       lines.push({
@@ -524,6 +558,34 @@ function enumerateTurnCandidates(state: LiveLikeState, tuning: BotTuning, maxCan
   }
 
   return picks
+}
+
+function fastTurnCandidates(state: LiveLikeState, maxCandidates: number): Axial[][] {
+  const cells = candidateCells(state.moves, 2)
+  const player = state.turn
+  const placements = state.placementsLeft
+  const cap = Math.max(1, Math.floor(maxCandidates))
+
+  // Check for immediate wins first (cheap — just checks line patterns)
+  for (const c of cells) {
+    const after = appendMove(state, c.q, c.r, player)
+    if (isWinningPlacement(after.moves, c.q, c.r, player)) {
+      return [[c]]
+    }
+  }
+
+  if (placements === 1) {
+    return cells.slice(0, cap).map((c) => [c])
+  }
+
+  const pairs: Axial[][] = []
+  const limit = Math.min(cells.length, cap + 2)
+  for (let i = 0; i < limit && pairs.length < cap; i++) {
+    for (let j = i + 1; j < limit && pairs.length < cap; j++) {
+      pairs.push([cells[i], cells[j]])
+    }
+  }
+  return pairs
 }
 
 function objectiveForPlayer(
@@ -773,9 +835,9 @@ function rolloutValue(node: SearchNode, rootPlayer: Player, tuning: BotTuning, o
   }
 
   for (let depth = 0; depth < options.maxSimulationTurns; depth += 1) {
-    const plan = chooseGreedyTurn(simState, rolloutTuning)
-    if (plan.length === 0) break
-    const applied = applyTurnLine(simState, plan)
+    const candidates = fastTurnCandidates(simState, 1)
+    if (candidates.length === 0) break
+    const applied = applyTurnLine(simState, candidates[0])
     simState = applied.state
     simWinner = applied.winner
     if (simWinner) break
@@ -849,7 +911,10 @@ export function chooseBotTurnDetailed(
   }
 
   const rootPlayer = state.turn
-  const rootCandidates = enumerateTurnCandidates(state, tuning, Math.max(1, Math.floor(options.turnCandidateCount)))
+  const candidateCount = Math.max(1, Math.floor(options.turnCandidateCount))
+  const rootCandidates = options.budget.maxTimeMs < 500
+    ? fastTurnCandidates(state, candidateCount)
+    : enumerateTurnCandidates(state, tuning, candidateCount, start + options.budget.maxTimeMs * 0.3)
   const root: SearchNode = {
     state,
     winner: null,
@@ -862,10 +927,13 @@ export function chooseBotTurnDetailed(
   }
 
   if (root.untriedActions.length === 0) {
+    const fallback = options.budget.maxTimeMs < 500
+      ? (fastTurnCandidates(state, 1)[0] ?? [])
+      : chooseGreedyTurn(state, tuning)
     return {
-      moves: chooseGreedyTurn(state, tuning),
+      moves: fallback,
       stats: {
-        mode: 'mcts',
+        mode: 'greedy',
         elapsedMs: nowMs() - start,
         nodesExpanded: 1,
         playouts: 0,
@@ -902,7 +970,26 @@ export function chooseBotTurnDetailed(
     }
   }
 
-  while (nodesExpanded < options.budget.maxNodes && nowMs() - start < options.budget.maxTimeMs) {
+  const deadline = start + options.budget.maxTimeMs
+
+  // If candidate generation already blew the budget, return best greedy candidate
+  if (nowMs() >= deadline && rootCandidates.length > 0) {
+    return {
+      moves: rootCandidates[0],
+      stats: {
+        mode: 'greedy',
+        elapsedMs: nowMs() - start,
+        nodesExpanded: 0,
+        playouts: 0,
+        boardEvaluations: evalCounter.count,
+        maxDepthTurns: 0,
+        rootCandidates: rootCandidates.length,
+        stopReason: 'time',
+      },
+    }
+  }
+
+  while (nodesExpanded < options.budget.maxNodes && nowMs() < deadline) {
     let depthTurns = 0
     let node = root
 
@@ -922,7 +1009,7 @@ export function chooseBotTurnDetailed(
         children: [],
         untriedActions: applied.winner
           ? []
-          : enumerateTurnCandidates(applied.state, tuning, Math.max(1, Math.floor(options.turnCandidateCount))),
+          : fastTurnCandidates(applied.state, options.turnCandidateCount),
         visits: 0,
         totalValue: 0,
       }
@@ -931,6 +1018,8 @@ export function chooseBotTurnDetailed(
       nodesExpanded += 1
       depthTurns += 1
     }
+
+    if (nowMs() >= deadline) break
 
     if (depthTurns > maxDepthTurns) {
       maxDepthTurns = depthTurns
@@ -973,10 +1062,13 @@ export function chooseBotTurnDetailed(
   }
 
   if (root.children.length === 0) {
+    const fallback2 = options.budget.maxTimeMs < 500
+      ? (fastTurnCandidates(state, 1)[0] ?? [])
+      : chooseGreedyTurn(state, tuning)
     return {
-      moves: chooseGreedyTurn(state, tuning),
+      moves: fallback2,
       stats: {
-        mode: 'mcts',
+        mode: 'greedy',
         elapsedMs: nowMs() - start,
         nodesExpanded,
         playouts,
@@ -1099,7 +1191,10 @@ export async function chooseBotTurnDetailedAsync(
   }
 
   const rootPlayer = state.turn
-  const rootCandidates = enumerateTurnCandidates(state, tuning, Math.max(1, Math.floor(options.turnCandidateCount)))
+  const candidateCount = Math.max(1, Math.floor(options.turnCandidateCount))
+  const rootCandidates = options.budget.maxTimeMs < 500
+    ? fastTurnCandidates(state, candidateCount)
+    : enumerateTurnCandidates(state, tuning, candidateCount, start + options.budget.maxTimeMs * 0.3)
   const root: SearchNode = {
     state,
     winner: null,
@@ -1154,7 +1249,9 @@ export async function chooseBotTurnDetailedAsync(
     }
   }
 
-  while (nodesExpanded < options.budget.maxNodes && nowMs() - start < options.budget.maxTimeMs) {
+  const asyncDeadline = start + options.budget.maxTimeMs
+
+  while (nodesExpanded < options.budget.maxNodes && nowMs() < asyncDeadline) {
     let depthTurns = 0
     let node = root
 
@@ -1174,7 +1271,7 @@ export async function chooseBotTurnDetailedAsync(
         children: [],
         untriedActions: applied.winner
           ? []
-          : enumerateTurnCandidates(applied.state, tuning, Math.max(1, Math.floor(options.turnCandidateCount))),
+          : fastTurnCandidates(applied.state, options.turnCandidateCount),
         visits: 0,
         totalValue: 0,
       }
@@ -1183,6 +1280,8 @@ export async function chooseBotTurnDetailedAsync(
       nodesExpanded += 1
       depthTurns += 1
     }
+
+    if (nowMs() >= asyncDeadline) break
 
     if (depthTurns > maxDepthTurns) {
       maxDepthTurns = depthTurns
